@@ -8,25 +8,33 @@ import {
   type Star,
 } from "./types";
 
-const PADDING = 0.2;
-
 type Rect = { x: number; y: number; w: number; h: number };
+type Side = "negative" | "positive";
 
 type Item = {
   star: Star;
   minArea: number;
 };
 
+type Spine = {
+  horizontal: boolean;
+  center: number;
+};
+
+const PADDING = 0;
+
 export function layoutRooms(house: House): Room[] {
   const module = (house.moduleMm || DEFAULT_MODULE_MM) / 1000;
   const indoorStars = house.stars.filter((s) => !isGarden(s.name));
   const gardenStars = house.stars.filter((s) => isGarden(s.name));
 
-  const indoor = indoorStars.length
-    ? partitionBuilding(house, indoorStars, module)
-    : [];
-  const gardens = placeGardens(house, gardenStars, indoor, module);
-  return [...indoor, ...gardens];
+  if (indoorStars.length === 0) {
+    return placeGardens(house, gardenStars, [], module);
+  }
+
+  const { starRooms, autoRooms } = layoutBuilding(house, indoorStars, module);
+  const gardens = placeGardens(house, gardenStars, starRooms, module);
+  return [...starRooms, ...autoRooms, ...gardens];
 }
 
 export function floorStats(house: House) {
@@ -41,15 +49,35 @@ export function floorStats(house: House) {
   };
 }
 
-function partitionBuilding(house: House, stars: Star[], module: number): Room[] {
-  const items: Item[] = stars.map((star) => ({
-    star,
-    minArea: Math.max(MIN_AREA, star.area),
-  }));
+function layoutBuilding(house: House, stars: Star[], module: number) {
   const stats = floorStats(house);
-  const aspect = aspectFromStars(stars);
-  const footprint = fitFootprint(house, stats.floorArea, aspect, module, stars);
-  return splitRect(footprint, items, house, module);
+  const footprint = fitFootprint(house, stats.floorArea, aspectFromStars(stars), module, stars);
+  const spine = makeSpine(footprint, stars, module);
+
+  const sideRects = getSideRects(footprint, spine);
+  const depGroups = groupByDepartment(stars);
+  const depBySide = splitDepartmentsBySide(depGroups, spine, house);
+
+  const rectByDepartment = new Map<string, Rect>();
+  for (const side of ["negative", "positive"] as const) {
+    const sideDepartments = depBySide.get(side) ?? [];
+    const sideRect = sideRects[side];
+    for (const [depId, rect] of allocateDepartmentRects(sideRect, sideDepartments, spine, module)) {
+      rectByDepartment.set(depId, rect);
+    }
+  }
+
+  const starRooms: Room[] = [];
+  for (const dep of depGroups) {
+    const rect = rectByDepartment.get(dep.departmentId);
+    if (!rect) continue;
+    const items = dep.stars.map((star) => ({ star, minArea: Math.max(MIN_AREA, star.area) }));
+    starRooms.push(...splitRect(rect, items, house, module));
+  }
+
+  const autoRooms: Room[] = [];
+
+  return { starRooms, autoRooms };
 }
 
 function aspectFromStars(stars: Star[]) {
@@ -58,7 +86,7 @@ function aspectFromStars(stars: Star[]) {
   const ys = stars.map((s) => s.y);
   const w = Math.max(...xs) - Math.min(...xs) + 1;
   const h = Math.max(...ys) - Math.min(...ys) + 1;
-  return clamp(w / h, 0.55, 1.8);
+  return clamp(w / h, 0.5, 2.0);
 }
 
 function fitFootprint(
@@ -90,17 +118,225 @@ function fitFootprint(
   if (y < 0) y = 0;
   if (x + w > house.site.width) x = snapDown(house.site.width - w, module);
   if (y + h > house.site.height) y = snapDown(house.site.height - h, module);
-  x = Math.max(0, x);
-  y = Math.max(0, y);
-  return { x, y, w, h };
+
+  return { x: Math.max(0, x), y: Math.max(0, y), w, h };
 }
 
-function splitRect(
-  rect: Rect,
-  items: Item[],
+function makeSpine(footprint: Rect, stars: Star[], module: number): Spine {
+  const spreadX = spread(stars.map((s) => s.x));
+  const spreadY = spread(stars.map((s) => s.y));
+  const horizontal = spreadX >= spreadY;
+  const center = horizontal
+    ? average(stars.map((s) => s.y))
+    : average(stars.map((s) => s.x));
+
+  if (horizontal) {
+    let y = snapNearest(center, module);
+    y = clamp(y, footprint.y + module, footprint.y + footprint.h - module);
+    return {
+      horizontal,
+      center: y,
+    };
+  }
+
+  let x = snapNearest(center, module);
+  x = clamp(x, footprint.x + module, footprint.x + footprint.w - module);
+  return {
+    horizontal,
+    center: x,
+  };
+}
+
+function getSideRects(footprint: Rect, spine: Spine): Record<Side, Rect> {
+  if (spine.horizontal) {
+    const negative: Rect = {
+      x: footprint.x,
+      y: footprint.y,
+      w: footprint.w,
+      h: Math.max(0, spine.center - footprint.y),
+    };
+    const positive: Rect = {
+      x: footprint.x,
+      y: spine.center,
+      w: footprint.w,
+      h: Math.max(0, footprint.y + footprint.h - spine.center),
+    };
+    return { negative, positive };
+  }
+
+  const negative: Rect = {
+    x: footprint.x,
+    y: footprint.y,
+    w: Math.max(0, spine.center - footprint.x),
+    h: footprint.h,
+  };
+  const positive: Rect = {
+    x: spine.center,
+    y: footprint.y,
+    w: Math.max(0, footprint.x + footprint.w - spine.center),
+    h: footprint.h,
+  };
+  return { negative, positive };
+}
+
+function groupByDepartment(stars: Star[]) {
+  const map = new Map<string, { departmentId: string; stars: Star[]; area: number }>();
+  for (const star of stars) {
+    const departmentId = star.departmentId || "dep-a";
+    const group = map.get(departmentId) ?? { departmentId, stars: [], area: 0 };
+    group.stars.push(star);
+    group.area += Math.max(MIN_AREA, star.area);
+    map.set(departmentId, group);
+  }
+  return [...map.values()];
+}
+
+function splitDepartmentsBySide(
+  groups: { departmentId: string; stars: Star[]; area: number }[],
+  spine: Spine,
   house: House,
+) {
+  const bySide = new Map<Side, { departmentId: string; stars: Star[]; area: number }[]>([
+    ["negative", []],
+    ["positive", []],
+  ]);
+  for (const group of groups) {
+    const centroid = average(
+      group.stars.map((s) => (spine.horizontal ? s.y : s.x)),
+    );
+    const side: Side = centroid < spine.center ? "negative" : "positive";
+    bySide.get(side)?.push(group);
+  }
+
+  if ((bySide.get("negative")?.length ?? 0) === 0 && (bySide.get("positive")?.length ?? 0) > 1) {
+    const moved = bySide.get("positive")?.shift();
+    if (moved) bySide.get("negative")?.push(moved);
+  }
+  if ((bySide.get("positive")?.length ?? 0) === 0 && (bySide.get("negative")?.length ?? 0) > 1) {
+    const moved = bySide.get("negative")?.pop();
+    if (moved) bySide.get("positive")?.push(moved);
+  }
+
+  for (const side of ["negative", "positive"] as const) {
+    bySide.get(side)?.sort((a, b) => {
+      const pa = average(a.stars.map((s) => (spine.horizontal ? s.x : s.y)));
+      const pb = average(b.stars.map((s) => (spine.horizontal ? s.x : s.y)));
+      return pa - pb;
+    });
+  }
+
+  // 実線リンクで異なる部門が強く結ばれている場合は、
+  // 部門の左右固定を少し緩めて同じ側に寄せる。
+  alignSidesByAccess(bySide, house);
+
+  return bySide;
+}
+
+function alignSidesByAccess(
+  bySide: Map<Side, { departmentId: string; stars: Star[]; area: number }[]>,
+  house: House,
+) {
+  const sideOf = new Map<string, Side>();
+  for (const side of ["negative", "positive"] as const) {
+    for (const group of bySide.get(side) ?? []) {
+      sideOf.set(group.departmentId, side);
+    }
+  }
+
+  const starById = new Map(house.stars.map((s) => [s.id, s]));
+  const pairCount = new Map<string, number>();
+  for (const link of house.links) {
+    if (link.kind !== "access") continue;
+    const a = starById.get(link.fromId);
+    const b = starById.get(link.toId);
+    if (!a || !b) continue;
+    if (a.departmentId === b.departmentId) continue;
+    const key = [a.departmentId, b.departmentId].sort().join("|");
+    pairCount.set(key, (pairCount.get(key) ?? 0) + 1);
+  }
+
+  for (const [key, count] of pairCount) {
+    if (count < 2) continue;
+    const [depA, depB] = key.split("|");
+    const sideA = sideOf.get(depA);
+    const sideB = sideOf.get(depB);
+    if (!sideA || !sideB || sideA === sideB) continue;
+
+    const a = findGroup(bySide, depA);
+    const b = findGroup(bySide, depB);
+    if (!a || !b) continue;
+
+    // 小さい方を、大きい方の側へ移す
+    const moveDep = a.area <= b.area ? a.departmentId : b.departmentId;
+    const toSide = a.area <= b.area ? sideB : sideA;
+    const fromSide = toSide === "negative" ? "positive" : "negative";
+    const fromArr = bySide.get(fromSide) ?? [];
+    const idx = fromArr.findIndex((g) => g.departmentId === moveDep);
+    if (idx >= 0) {
+      const [moved] = fromArr.splice(idx, 1);
+      (bySide.get(toSide) ?? []).push(moved);
+      sideOf.set(moveDep, toSide);
+    }
+  }
+
+  for (const side of ["negative", "positive"] as const) {
+    bySide.get(side)?.sort((a, b) => {
+      const pa = average(a.stars.map((s) => s.x));
+      const pb = average(b.stars.map((s) => s.x));
+      return pa - pb;
+    });
+  }
+}
+
+function findGroup(
+  bySide: Map<Side, { departmentId: string; stars: Star[]; area: number }[]>,
+  departmentId: string,
+) {
+  for (const side of ["negative", "positive"] as const) {
+    const found = (bySide.get(side) ?? []).find((g) => g.departmentId === departmentId);
+    if (found) return found;
+  }
+  return null;
+}
+
+function allocateDepartmentRects(
+  sideRect: Rect,
+  groups: { departmentId: string; stars: Star[]; area: number }[],
+  spine: Spine,
   module: number,
-): Room[] {
+) {
+  const result = new Map<string, Rect>();
+  if (groups.length === 0 || sideRect.w <= 0 || sideRect.h <= 0) return result;
+
+  const alongLength = spine.horizontal ? sideRect.w : sideRect.h;
+  const totalArea = groups.reduce((sum, g) => sum + g.area, 0);
+  let cursor = spine.horizontal ? sideRect.x : sideRect.y;
+  const end = cursor + alongLength;
+
+  for (let i = 0; i < groups.length; i++) {
+    const group = groups[i];
+    const remaining = groups.length - i;
+    const isLast = i === groups.length - 1;
+    let span = alongLength / groups.length;
+    if (!isLast) {
+      span = (group.area / totalArea) * alongLength;
+      span = snapUp(span, module);
+      const maxSpan = end - cursor - module * (remaining - 1);
+      span = clamp(span, module, Math.max(module, maxSpan));
+    } else {
+      span = end - cursor;
+    }
+
+    const rect = spine.horizontal
+      ? { x: cursor, y: sideRect.y, w: span, h: sideRect.h }
+      : { x: sideRect.x, y: cursor, w: sideRect.w, h: span };
+    result.set(group.departmentId, rect);
+    cursor += span;
+  }
+  return result;
+}
+
+function splitRect(rect: Rect, items: Item[], house: House, module: number): Room[] {
   if (items.length === 0) return [];
   if (items.length === 1) {
     const item = items[0];
@@ -108,6 +344,7 @@ function splitRect(
       {
         id: item.star.id,
         name: item.star.name,
+        kind: "star",
         x: rect.x,
         y: rect.y,
         w: rect.w,
@@ -118,16 +355,8 @@ function splitRect(
   }
 
   const vertical = chooseAxis(rect, items);
-  const { leftItems, rightItems, split } = chooseSplit(
-    rect,
-    items,
-    house,
-    vertical,
-    module,
-  );
-  if (split == null) {
-    return items.map((_, index) => stackFallback(rect, items, index, module));
-  }
+  const { leftItems, rightItems, split } = chooseSplit(rect, items, house, vertical, module);
+  if (split == null) return items.map((_, index) => stackFallback(rect, items, index, module));
 
   const leftRect = vertical
     ? { x: rect.x, y: rect.y, w: split - rect.x, h: rect.h }
@@ -136,32 +365,21 @@ function splitRect(
     ? { x: split, y: rect.y, w: rect.x + rect.w - split, h: rect.h }
     : { x: rect.x, y: split, w: rect.w, h: rect.y + rect.h - split };
 
-  return [
-    ...splitRect(leftRect, leftItems, house, module),
-    ...splitRect(rightRect, rightItems, house, module),
-  ];
+  return [...splitRect(leftRect, leftItems, house, module), ...splitRect(rightRect, rightItems, house, module)];
 }
 
 function chooseAxis(rect: Rect, items: Item[]) {
-  const xs = items.map((i) => i.star.x);
-  const ys = items.map((i) => i.star.y);
-  const spreadX = Math.max(...xs) - Math.min(...xs);
-  const spreadY = Math.max(...ys) - Math.min(...ys);
-  if (spreadX > spreadY + 0.4) return true;
-  if (spreadY > spreadX + 0.4) return false;
+  const spreadX = spread(items.map((i) => i.star.x));
+  const spreadY = spread(items.map((i) => i.star.y));
+  if (spreadX > spreadY + 0.3) return true;
+  if (spreadY > spreadX + 0.3) return false;
   return rect.w >= rect.h;
 }
 
-function chooseSplit(
-  rect: Rect,
-  items: Item[],
-  house: House,
-  vertical: boolean,
-  module: number,
-) {
-  const axis = vertical ? "x" : "y" as const;
+function chooseSplit(rect: Rect, items: Item[], house: House, vertical: boolean, module: number) {
+  const axis = vertical ? "x" : "y";
   const sorted = [...items].sort(
-    (a, b) => a.star[axis] - b.star[axis] || a.star.id.localeCompare(b.star.id),
+    (a, b) => (a.star as any)[axis] - (b.star as any)[axis] || a.star.id.localeCompare(b.star.id),
   );
   const total = sumMin(sorted);
   const span = vertical ? rect.w : rect.h;
@@ -170,9 +388,10 @@ function chooseSplit(
   let bestK = 1;
   let bestScore = Infinity;
   for (let k = 1; k < sorted.length; k++) {
-    const leftMin = sumMin(sorted.slice(0, k));
-    const frac = leftMin / total;
-    const cuts = countCutLinks(sorted.slice(0, k), sorted.slice(k), house);
+    const left = sorted.slice(0, k);
+    const right = sorted.slice(k);
+    const frac = sumMin(left) / total;
+    const cuts = countCutLinks(left, right, house);
     const score = Math.abs(frac - 0.5) + cuts * 0.35;
     if (score < bestScore) {
       bestScore = score;
@@ -182,50 +401,21 @@ function chooseSplit(
 
   const leftItems = sorted.slice(0, bestK);
   const rightItems = sorted.slice(bestK);
-  const frac = sumMin(leftItems) / total;
-  let kMod = Math.round(modules * frac);
-  kMod = clamp(kMod, 1, modules - 1);
-
-  const minLeft = vertical
-    ? sumMin(leftItems) / rect.h
-    : sumMin(leftItems) / rect.w;
-  const minRight = vertical
-    ? sumMin(rightItems) / rect.h
-    : sumMin(rightItems) / rect.w;
-
+  let splitK = clamp(Math.round((sumMin(leftItems) / total) * modules), 1, modules - 1);
   const origin = vertical ? rect.x : rect.y;
-  for (let shift = 0; shift < modules; shift++) {
-    for (const dir of [0, 1, -1] as const) {
-      const tryK = kMod + dir * shift;
-      if (tryK < 1 || tryK > modules - 1) continue;
-      const split = origin + tryK * module;
-      const leftSpan = tryK * module;
-      const rightSpan = span - leftSpan;
-      if (leftSpan + 1e-6 >= minLeft && rightSpan + 1e-6 >= minRight) {
-        return { leftItems, rightItems, split };
-      }
-    }
-  }
-
-  const split = origin + kMod * module;
-  if (split <= origin + 0.01 || split >= origin + span - 0.01) {
-    return { leftItems, rightItems, split: null as number | null };
-  }
+  let split = origin + splitK * module;
+  split = clamp(split, origin + module, origin + span - module);
   return { leftItems, rightItems, split };
 }
 
-function stackFallback(
-  rect: Rect,
-  items: Item[],
-  index: number,
-  module: number,
-): Room {
+function stackFallback(rect: Rect, items: Item[], index: number, module: number): Room {
   const item = items[index];
   const n = items.length;
   const h = Math.max(module, rect.h / n);
   return {
     id: item.star.id,
     name: item.star.name,
+    kind: "star",
     x: rect.x,
     y: rect.y + index * h,
     w: rect.w,
@@ -250,12 +440,7 @@ function countCutLinks(left: Item[], right: Item[], house: House) {
   return n;
 }
 
-function placeGardens(
-  house: House,
-  gardenStars: Star[],
-  indoor: Room[],
-  module: number,
-): Room[] {
+function placeGardens(house: House, gardenStars: Star[], indoor: Room[], module: number): Room[] {
   return gardenStars.map((star) => {
     const minArea = Math.max(MIN_AREA, star.area);
     const neighbor =
@@ -263,16 +448,15 @@ function placeGardens(
         house.links.some(
           (l) =>
             l.kind === "access" &&
-            ((l.fromId === star.id && l.toId === room.id) ||
-              (l.toId === star.id && l.fromId === room.id)),
+            ((l.fromId === star.id && l.toId === room.id) || (l.toId === star.id && l.fromId === room.id)),
         ),
       ) ?? nearestRoom(star, indoor);
 
     if (!neighbor) {
       const side = Math.max(module, snapUp(Math.sqrt(minArea), module));
-      let x = clamp(snapNearest(star.x - side / 2, module), PADDING, house.site.width - side - PADDING);
-      let y = clamp(snapNearest(star.y - side / 2, module), PADDING, house.site.height - side - PADDING);
-      return { id: star.id, name: star.name, x, y, w: side, h: side, minArea };
+      const x = clamp(snapNearest(star.x - side / 2, module), PADDING, house.site.width - side - PADDING);
+      const y = clamp(snapNearest(star.y - side / 2, module), PADDING, house.site.height - side - PADDING);
+      return { id: star.id, name: star.name, kind: "garden", x, y, w: side, h: side, minArea };
     }
 
     const dx = star.x - (neighbor.x + neighbor.w / 2);
@@ -282,23 +466,25 @@ function placeGardens(
       const w = Math.max(module, snapUp(minArea / h, module));
       const x = dx >= 0 ? neighbor.x + neighbor.w : neighbor.x - w;
       const y = neighbor.y;
-      return clampGarden({ id: star.id, name: star.name, x, y, w, h, minArea }, house);
+      return clampGarden({ id: star.id, name: star.name, kind: "garden", x, y, w, h, minArea }, house);
     }
     const w = Math.max(module, snapUp(neighbor.w, module));
     const h = Math.max(module, snapUp(minArea / w, module));
     const x = neighbor.x;
     const y = dy >= 0 ? neighbor.y + neighbor.h : neighbor.y - h;
-    return clampGarden({ id: star.id, name: star.name, x, y, w, h, minArea }, house);
+    return clampGarden({ id: star.id, name: star.name, kind: "garden", x, y, w, h, minArea }, house);
   });
 }
 
 function nearestRoom(star: Star, rooms: Room[]) {
   if (rooms.length === 0) return null;
-  return rooms.slice().sort((a, b) => {
-    const da = Math.hypot(star.x - (a.x + a.w / 2), star.y - (a.y + a.h / 2));
-    const db = Math.hypot(star.x - (b.x + b.w / 2), star.y - (b.y + b.h / 2));
-    return da - db;
-  })[0];
+  return rooms
+    .slice()
+    .sort((a, b) => {
+      const da = Math.hypot(star.x - (a.x + a.w / 2), star.y - (a.y + a.h / 2));
+      const db = Math.hypot(star.x - (b.x + b.w / 2), star.y - (b.y + b.h / 2));
+      return da - db;
+    })[0];
 }
 
 function clampGarden(room: Room, house: House): Room {
@@ -311,6 +497,11 @@ function clampGarden(room: Room, house: House): Room {
 
 function sumMin(items: Item[]) {
   return items.reduce((sum, item) => sum + item.minArea, 0);
+}
+
+function spread(ns: number[]) {
+  if (ns.length === 0) return 0;
+  return Math.max(...ns) - Math.min(...ns);
 }
 
 function snapNearest(n: number, module: number) {

@@ -6,6 +6,7 @@ import { planify } from "./planify";
 import {
   DEFAULT_AREA,
   DEFAULT_AREA_MARGIN,
+  DEFAULT_DEPARTMENTS,
   DEFAULT_MODULE_MM,
   DEFAULT_SITE,
   MAX_AREA,
@@ -14,6 +15,8 @@ import {
   type House,
   type Link,
   type Mode,
+  roomTypeLabel,
+  type RoomType,
   type Star,
 } from "./types";
 import { describeHouse } from "./words";
@@ -21,6 +24,7 @@ import { describeHouse } from "./words";
 const emptyHouse = (): House => ({
   site: { ...DEFAULT_SITE },
   siteVisible: true,
+  departments: DEFAULT_DEPARTMENTS.map((d) => ({ ...d })),
   stars: [],
   links: [],
   rooms: null,
@@ -38,9 +42,20 @@ export default function App() {
   const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null);
   const [linkFromId, setLinkFromId] = useState<string | null>(null);
   const [starCount, setStarCount] = useState(1);
+  const [siteHeightDraft, setSiteHeightDraft] = useState(
+    String(emptyHouse().site.height),
+  );
+  const [siteWidthDraft, setSiteWidthDraft] = useState(
+    String(emptyHouse().site.width),
+  );
+  const [moduleMmDraft, setModuleMmDraft] = useState(
+    String(emptyHouse().moduleMm),
+  );
+  const [starAreaDrafts, setStarAreaDrafts] = useState<Record<string, string>>(
+    {},
+  );
 
   const words = useMemo(() => describeHouse(house), [house]);
-  const selectedStar = house.stars.find((s) => s.id === selectedStarId) ?? null;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -57,6 +72,18 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedStarId, selectedLinkId]);
 
+  useEffect(() => {
+    setSiteHeightDraft(String(house.site.height));
+  }, [house.site.height]);
+
+  useEffect(() => {
+    setSiteWidthDraft(String(house.site.width));
+  }, [house.site.width]);
+
+  useEffect(() => {
+    setModuleMmDraft(String(house.moduleMm));
+  }, [house.moduleMm]);
+
   function markEdited(next: House): House {
     return {
       ...next,
@@ -66,6 +93,7 @@ export default function App() {
 
   function addStar(x: number, y: number) {
     const name = `部屋${starCount}`;
+    const defaultDepartmentId = house.departments[0]?.id ?? "dep-a";
     setStarCount((n) => n + 1);
     const star: Star = {
       id: newId("star"),
@@ -73,6 +101,8 @@ export default function App() {
       x,
       y,
       area: DEFAULT_AREA,
+      departmentId: defaultDepartmentId,
+      roomType: "normal",
     };
     setHouse((h) =>
       markEdited({
@@ -111,6 +141,117 @@ export default function App() {
       rooms: h.rooms
         ? h.rooms.map((r) => (r.id === id ? { ...r, name } : r))
         : h.rooms,
+    }));
+  }
+
+  function setStarDepartment(starId: string, departmentId: string) {
+    setHouse((h) =>
+      markEdited({
+        ...h,
+        stars: h.stars.map((s) =>
+          s.id === starId ? { ...s, departmentId } : s,
+        ),
+      }),
+    );
+  }
+
+  function setStarRoomType(starId: string, roomType: RoomType) {
+    setHouse((h) =>
+      markEdited({
+        ...h,
+        stars: h.stars.map((s) => (s.id === starId ? { ...s, roomType } : s)),
+      }),
+    );
+  }
+
+  function commitStarArea(starId: string, raw: string) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) {
+      resizeStar(starId, parsed);
+    }
+    setStarAreaDrafts((prev) => {
+      const next = { ...prev };
+      delete next[starId];
+      return next;
+    });
+  }
+
+  function commitSiteHeight(raw: string) {
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) {
+      setSiteHeightDraft(String(house.site.height));
+      return;
+    }
+    const height = Math.max(5, parsed);
+    setHouse((h) =>
+      markEdited({
+        ...h,
+        site: { ...h.site, height },
+      }),
+    );
+  }
+
+  function commitSiteWidth(raw: string) {
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) {
+      setSiteWidthDraft(String(house.site.width));
+      return;
+    }
+    const width = Math.max(5, parsed);
+    setHouse((h) =>
+      markEdited({
+        ...h,
+        site: { ...h.site, width },
+      }),
+    );
+  }
+
+  function commitModuleMm(raw: string) {
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) {
+      setModuleMmDraft(String(house.moduleMm));
+      return;
+    }
+    const moduleMm = Math.max(300, parsed);
+    setHouse((h) =>
+      markEdited({
+        ...h,
+        moduleMm,
+      }),
+    );
+  }
+
+  function renameDepartment(departmentId: string, name: string) {
+    setHouse((h) => ({
+      ...h,
+      departments: h.departments.map((d) =>
+        d.id === departmentId ? { ...d, name } : d,
+      ),
+    }));
+  }
+
+  function recolorDepartment(departmentId: string, color: string) {
+    setHouse((h) => ({
+      ...h,
+      departments: h.departments.map((d) =>
+        d.id === departmentId ? { ...d, color } : d,
+      ),
+    }));
+  }
+
+  function addDepartment() {
+    const idx = house.departments.length + 1;
+    const depId = newId("dep");
+    setHouse((h) => ({
+      ...h,
+      departments: [
+        ...h.departments,
+        {
+          id: depId,
+          name: `部門${idx}`,
+          color: "#e7ddcb",
+        },
+      ],
     }));
   }
 
@@ -208,7 +349,7 @@ export default function App() {
           <h1>星座の家</h1>
         </div>
         <p className="lead">
-          円の星で部屋の関係を置き、「図面化」で壁を共有した間取りと出入り口にします。
+          要求室の星を部門色でまとめ、図面化で廊下帯と部門塊を作って平面にします。
         </p>
       </header>
 
@@ -300,46 +441,130 @@ export default function App() {
             {house.rooms && house.planStale ? (
               <span className="stale">古い図面です。もう一度図面化してください。</span>
             ) : house.rooms ? (
-              <span className="plan-note">太い線が外壁、細い線が間仕切り、｜　｜がドアです。</span>
+              <span className="plan-note">基準線で部門の左右を保ちながら、同じ部門色をまとめて配置しています。</span>
             ) : null}
           </div>
           <PlanView house={house} />
         </section>
 
         <aside className="panel words-panel">
-          <h2>言葉</h2>
-          <ul className="words">
-            {words.map((line) => (
-              <li key={line}>{line}</li>
-            ))}
-          </ul>
-          {selectedStar ? (
-            <div className="editor">
-              <label>
-                名前
-                <input
-                  value={selectedStar.name}
-                  onChange={(e) => renameStar(selectedStar.id, e.target.value)}
-                />
-              </label>
-              <label>
-                広さ（最小） {selectedStar.area.toFixed(1)}㎡
-                <input
-                  type="range"
-                  min={MIN_AREA}
-                  max={MAX_AREA}
-                  step={0.5}
-                  value={selectedStar.area}
-                  onChange={(e) =>
-                    resizeStar(selectedStar.id, Number(e.target.value))
+          <h2 className="star-list-head">星（要求室）</h2>
+          <ul className="star-list">
+            {house.stars.map((star) => {
+              const dep = house.departments.find((d) => d.id === star.departmentId);
+              const depColor = dep?.color ?? "#eadfcb";
+              const typeLabel = roomTypeLabel(star.roomType);
+              return (
+                <li
+                  key={star.id}
+                  className={
+                    selectedStarId === star.id ? "star-row active" : "star-row"
                   }
-                />
-              </label>
-            </div>
-          ) : (
-            <p className="quiet">星を選ぶと、名前と広さを変えられます。</p>
-          )}
+                  onClick={() => {
+                    setMode("select");
+                    setLinkFromId(null);
+                    setSelectedLinkId(null);
+                    setSelectedStarId(star.id);
+                  }}
+                >
+                  <span
+                    className="star-dot"
+                    style={{ background: depColor }}
+                    aria-hidden
+                  />
+                  <div className="star-row-fields">
+                    <input
+                      className="star-inline-name"
+                      value={star.name}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => renameStar(star.id, e.target.value)}
+                    />
+                    <div className="star-inline-meta">
+                      <label>
+                        面積
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={starAreaDrafts[star.id] ?? String(star.area)}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) =>
+                            setStarAreaDrafts((prev) => ({
+                              ...prev,
+                              [star.id]: e.target.value,
+                            }))
+                          }
+                          onBlur={(e) => commitStarArea(star.id, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              (e.currentTarget as HTMLInputElement).blur();
+                            }
+                          }}
+                        />
+                      </label>
+                      <label>
+                        部門
+                        <select
+                          value={star.departmentId}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) =>
+                            setStarDepartment(star.id, e.target.value)
+                          }
+                        >
+                          {house.departments.map((d) => (
+                            <option key={d.id} value={d.id}>
+                              {d.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        種別
+                        <select
+                          value={star.roomType}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) =>
+                            setStarRoomType(star.id, e.target.value as RoomType)
+                          }
+                        >
+                          <option value="normal">通常室</option>
+                          <option value="entrance">玄関</option>
+                          <option value="stair">階段室</option>
+                          <option value="corridor">廊下</option>
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+                  <span className="star-row-meta">{typeLabel}</span>
+                </li>
+              );
+            })}
+          </ul>
+
+          <p className="quiet">星の編集は上のリストから行います。</p>
           <div className="editor layout-settings">
+            <div className="department-head">
+              <span>部門設定</span>
+              <button type="button" className="tool" onClick={addDepartment}>
+                部門を追加
+              </button>
+            </div>
+            <div className="department-list">
+              {house.departments.map((dep) => (
+                <div key={dep.id} className="department-row">
+                  <input
+                    type="color"
+                    value={dep.color}
+                    onChange={(e) => recolorDepartment(dep.id, e.target.value)}
+                    aria-label={`${dep.name}の色`}
+                  />
+                  <input
+                    type="text"
+                    value={dep.name}
+                    onChange={(e) => renameDepartment(dep.id, e.target.value)}
+                  />
+                </div>
+              ))}
+            </div>
             <label className="toggle-row">
               <span>敷地枠</span>
               <button
@@ -357,38 +582,30 @@ export default function App() {
                 <label>
                   縦（m）
                   <input
-                    type="number"
-                    min={5}
-                    max={50}
-                    step={0.5}
-                    value={house.site.height}
-                    onChange={(e) => {
-                      const height = Math.max(5, Number(e.target.value) || 5);
-                      setHouse((h) =>
-                        markEdited({
-                          ...h,
-                          site: { ...h.site, height },
-                        }),
-                      );
+                    type="text"
+                    inputMode="decimal"
+                    value={siteHeightDraft}
+                    onChange={(e) => setSiteHeightDraft(e.target.value)}
+                    onBlur={(e) => commitSiteHeight(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        (e.currentTarget as HTMLInputElement).blur();
+                      }
                     }}
                   />
                 </label>
                 <label>
                   横（m）
                   <input
-                    type="number"
-                    min={5}
-                    max={50}
-                    step={0.5}
-                    value={house.site.width}
-                    onChange={(e) => {
-                      const width = Math.max(5, Number(e.target.value) || 5);
-                      setHouse((h) =>
-                        markEdited({
-                          ...h,
-                          site: { ...h.site, width },
-                        }),
-                      );
+                    type="text"
+                    inputMode="decimal"
+                    value={siteWidthDraft}
+                    onChange={(e) => setSiteWidthDraft(e.target.value)}
+                    onBlur={(e) => commitSiteWidth(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        (e.currentTarget as HTMLInputElement).blur();
+                      }
                     }}
                   />
                 </label>
@@ -412,22 +629,27 @@ export default function App() {
             <label>
               グリッド（mm）
               <input
-                type="number"
-                min={300}
-                max={2000}
-                step={10}
-                value={house.moduleMm}
-                onChange={(e) =>
-                  setHouse((h) =>
-                    markEdited({
-                      ...h,
-                      moduleMm: Math.max(300, Number(e.target.value) || 910),
-                    }),
-                  )
-                }
+                type="text"
+                inputMode="numeric"
+                value={moduleMmDraft}
+                onChange={(e) => setModuleMmDraft(e.target.value)}
+                onBlur={(e) => commitModuleMm(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    (e.currentTarget as HTMLInputElement).blur();
+                  }
+                }}
               />
             </label>
           </div>
+          <details className="words-toggle">
+            <summary>言葉（開閉）</summary>
+            <ul className="words words-box">
+              {words.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </details>
         </aside>
       </div>
     </div>

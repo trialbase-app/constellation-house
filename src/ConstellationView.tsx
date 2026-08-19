@@ -154,6 +154,9 @@ export function ConstellationView({
 
   const grid: number[] = [];
   for (let x = 0; x <= house.site.width; x += 1) grid.push(x);
+  const colorByDepartment = new Map(
+    house.departments.map((d) => [d.id, d.color]),
+  );
 
   return (
     <svg
@@ -279,7 +282,7 @@ export function ConstellationView({
               cx={star.x}
               cy={star.y}
               r={r}
-              fill={garden ? "#dce8d4" : "#eadfcb"}
+              fill={garden ? "#dce8d4" : colorByDepartment.get(star.departmentId) ?? "#eadfcb"}
               stroke={selected ? "#8a3b24" : "#2c2924"}
               strokeWidth={selected ? 0.1 : 0.06}
               data-star={star.id}

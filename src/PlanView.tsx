@@ -19,6 +19,10 @@ export function PlanView({ house }: { house: House }) {
   const walls = house.walls ?? [];
   const openings = house.openings ?? [];
   const stale = Boolean(rooms && house.planStale);
+  const starById = new Map(house.stars.map((s) => [s.id, s]));
+  const colorByDepartment = new Map(
+    house.departments.map((d) => [d.id, d.color]),
+  );
 
   const bounds = planBounds(house, showSite);
   const vbW = bounds.w + MARGIN * 2;
@@ -134,7 +138,13 @@ export function PlanView({ house }: { house: House }) {
                 y={room.y}
                 width={room.w}
                 height={room.h}
-                fill={isGarden(room.name) ? "url(#garden-hatch)" : "#f4ead8"}
+                fill={
+                  room.kind === "corridor"
+                    ? "#ebe5da"
+                    : isGarden(room.name)
+                        ? "url(#garden-hatch)"
+                        : colorByDepartment.get(starById.get(room.id)?.departmentId ?? "") ?? "#f4ead8"
+                }
                 stroke="none"
               />
               {isGarden(room.name) ? (
@@ -177,7 +187,7 @@ export function PlanView({ house }: { house: House }) {
                 textAnchor="middle"
                 className="label-star"
               >
-                {room.name}
+                {room.kind === "corridor" ? "廊下" : room.name}
               </text>
               <text
                 x={room.x + room.w / 2}

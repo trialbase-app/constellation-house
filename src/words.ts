@@ -1,4 +1,4 @@
-import { distance, type House } from "./types";
+import { distance, roomTypeLabel, type House } from "./types";
 import { floorStats } from "./planLayout";
 
 export function describeHouse(house: House): string[] {
@@ -22,6 +22,7 @@ export function describeHouse(house: House): string[] {
     lines.push(
       `部屋の合計 ${formatNum(stats.roomSum)}㎡ × 余裕率 ${formatNum(stats.margin)} ＝ 床面積 ${formatNum(stats.floorArea)}㎡。グリッドは ${stats.moduleMm}mm。`,
     );
+    lines.push("図面化は、星座の基準線に対する左右関係を保ち、同じ部門色をまとめて割り付けます。");
     if (house.siteVisible) {
       const siteArea = house.site.width * house.site.height;
       const coverage = siteArea > 0 ? (stats.floorArea / siteArea) * 100 : 0;
@@ -32,16 +33,17 @@ export function describeHouse(house: House): string[] {
   }
 
   for (const star of house.stars) {
+    const typeLabel = roomTypeLabel(star.roomType);
     const room =
       house.rooms && !house.planStale
         ? house.rooms.find((r) => r.id === star.id)
         : undefined;
     if (room) {
       lines.push(
-        `${star.name}の広さは ${formatNum(star.area)}㎡以上（図面 ${formatNum(room.w * room.h)}㎡）。`,
+        `${star.name}（${typeLabel}）の広さは ${formatNum(star.area)}㎡以上（図面 ${formatNum(room.w * room.h)}㎡）。`,
       );
     } else {
-      lines.push(`${star.name}の広さは ${formatNum(star.area)}㎡以上。`);
+      lines.push(`${star.name}（${typeLabel}）の広さは ${formatNum(star.area)}㎡以上。`);
     }
   }
 

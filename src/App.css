@@ -89,7 +89,7 @@ h2 {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.15fr) 280px;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(320px, 0.9fr);
   gap: 16px;
   align-items: stretch;
 }
@@ -102,6 +102,7 @@ h2 {
   min-height: 520px;
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .panel-head {
@@ -162,6 +163,26 @@ h2 {
   color: #3b372f;
 }
 
+.words-toggle {
+  margin-top: 14px;
+  border: 1px solid #d7cfc2;
+  border-radius: 12px;
+  background: #fbf7f0;
+}
+
+.words-toggle > summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: #5c564c;
+}
+
+.words-box {
+  max-height: 210px;
+  overflow: auto;
+  padding: 0 14px 12px 28px;
+}
+
 .editor {
   margin-top: auto;
   display: grid;
@@ -178,12 +199,16 @@ h2 {
 
 .editor input[type="text"],
 .editor input[type="number"],
+.editor select,
 .editor input:not([type]) {
   border: 1px solid #cfc6b8;
   background: #fbf7f0;
   padding: 8px 10px;
   border-radius: 8px;
   color: inherit;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .quiet {
@@ -198,23 +223,181 @@ h2 {
   border-top: 1px solid #e0d8cc;
 }
 
-.toggle-row {
-  display: flex !important;
-  flex-direction: row !important;
+.department-head {
+  display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.department-head .tool {
+  white-space: nowrap;
+}
+
+.department-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.department-row {
+  display: grid;
+  grid-template-columns: 32px 1fr;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.department-row input[type="color"] {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid #cfc6b8;
+  border-radius: 6px;
+  background: #fbf7f0;
+}
+
+.department-row input[type="text"] {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.toggle-row {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.toggle-row .tool {
+  white-space: nowrap;
+  justify-self: end;
 }
 
 .site-size {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
   gap: 10px;
+  min-width: 0;
+}
+
+.site-size > label {
+  min-width: 0;
+}
+
+.editor input[type="range"] {
+  width: 100%;
+  min-width: 0;
 }
 
 .label-coverage {
   font-size: 0.32px;
   fill: #5c564c;
+}
+
+/* 星一覧 */
+.star-list-head {
+  margin-top: 14px;
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+}
+
+.star-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.star-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: #fbf7f0;
+  border: 1px solid #d7cfc2;
+  cursor: pointer;
+}
+
+.star-row:hover {
+  background: #efe6d6;
+}
+
+.star-row.active {
+  background: #2c2924;
+  border-color: #2c2924;
+  color: #fbf7f0;
+}
+
+.star-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(44, 41, 36, 0.35);
+}
+
+.star-row-name {
+  flex: 1;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.star-row-meta {
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.star-row-fields {
+  display: grid;
+  gap: 6px;
+}
+
+.star-inline-name {
+  width: 100%;
+  border: 1px solid #cfc6b8;
+  border-radius: 8px;
+  background: #fbf7f0;
+  color: #2c2924;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.star-inline-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.star-inline-meta > label {
+  min-width: 0;
+}
+
+.star-inline-meta label {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.star-inline-meta input,
+.star-inline-meta select {
+  border: 1px solid #cfc6b8;
+  border-radius: 8px;
+  background: #fbf7f0;
+  color: #2c2924;
+  padding: 5px 7px;
+  font-size: 11px;
+  width: 100%;
+  min-width: 0;
 }
 
 @media (max-width: 1100px) {
@@ -227,3 +410,4 @@ h2 {
     align-items: flex-start;
   }
 }
+
