@@ -4,15 +4,20 @@
 
 部屋を円の星として置き、行き来の線をつなぐと、言葉と簡易図面がついてくる設計スケッチ。
 
-## 動かし方
+リポジトリ: https://github.com/trialbase-app/constellation-house （非公開）
+
+## 動かし方（このPC／別のPC共通）
 
 ```bash
+git clone https://github.com/trialbase-app/constellation-house.git
 cd constellation-house
 npm install
 npm run dev
 ```
 
-ブラウザで表示された住所を開く。
+ブラウザで表示された住所（だいたい `http://localhost:5173`）を開く。
+
+すでにフォルダがある場合は `git clone` の代わりにそのフォルダへ入り、`git pull` で最新を取り込んでから `npm install` → `npm run dev`。
 
 ## 使い方
 
@@ -32,3 +37,4 @@ npm run dev
 9. そのあと星を動かすと、図面は古くなる。もう一度「図面化」する
 
 星を選ぶと、右の欄で名前と広さを変えられる。Delete キーで、選んでいる星や線を消せる。
+星座・図面は右上の＋−やホイールで拡大縮小。右ペインだけ上下スクロールします。
