@@ -1,7 +1,13 @@
 .app {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 28px 24px 48px;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 16px;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .top {
@@ -9,7 +15,8 @@
   justify-content: space-between;
   gap: 24px;
   align-items: flex-end;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
+  flex-shrink: 0;
 }
 
 .eyebrow {
@@ -45,6 +52,7 @@ h2 {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 10px;
+  flex-shrink: 0;
 }
 
 .tool {
@@ -82,9 +90,10 @@ h2 {
 }
 
 .hint {
-  margin: 0 0 16px;
+  margin: 0 0 12px;
   color: #6b645a;
   font-size: 14px;
+  flex-shrink: 0;
 }
 
 .workspace {
@@ -92,6 +101,9 @@ h2 {
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(320px, 0.9fr);
   gap: 16px;
   align-items: stretch;
+  flex: 1;
+  min-height: 0;
+  height: auto;
 }
 
 .panel {
@@ -99,10 +111,87 @@ h2 {
   border: 1px solid #d7cfc2;
   border-radius: 16px;
   padding: 16px;
-  min-height: 520px;
+  min-height: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
   min-width: 0;
+  overflow: hidden;
+}
+
+.canvas-panel,
+.plan-panel {
+  overflow: hidden;
+}
+
+.words-panel {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.canvas-panel h2,
+.plan-panel .panel-head {
+  flex-shrink: 0;
+}
+
+.view-frame {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.zoom-toolbar {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(251, 247, 240, 0.92);
+  border: 1px solid #d7cfc2;
+  box-shadow: 0 1px 4px rgba(44, 41, 36, 0.08);
+}
+
+.zoom-btn {
+  width: 32px;
+  height: 28px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #2c2924;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+}
+
+.zoom-btn:hover {
+  background: #efe6d6;
+}
+
+.zoom-btn.zoom-label {
+  width: auto;
+  min-width: 48px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: #5c564c;
+}
+
+.constellation,
+.plan {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  touch-action: none;
+  cursor: crosshair;
+  background: #efe8dc;
+  border-radius: 10px;
 }
 
 .panel-head {
@@ -122,19 +211,81 @@ h2 {
   font-size: 12px;
 }
 
-.constellation,
-.plan {
-  width: 100%;
-  flex: 1;
-  min-height: 420px;
-  touch-action: none;
-  cursor: crosshair;
-  background: #efe8dc;
-  border-radius: 10px;
+.validation-box {
+  margin-bottom: 12px;
+}
+
+.validation-summary {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.validation-summary.ok {
+  background: #e8f2e3;
+  color: #2f5a28;
+}
+
+.validation-summary.warn {
+  background: #f7eed8;
+  color: #7a5718;
+}
+
+.validation-summary.error {
+  background: #f6e4df;
+  color: #8a3b24;
+}
+
+.validation-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.validation-item {
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  display: grid;
+  gap: 4px;
+}
+
+.validation-item strong {
+  font-size: 12px;
+}
+
+.validation-item.ok {
+  background: #f4f8f1;
+  border-left: 3px solid #6a9b5c;
+}
+
+.validation-item.warn {
+  background: #fffaf0;
+  border-left: 3px solid #c89a3a;
+}
+
+.validation-item.error {
+  background: #fdf3f0;
+  border-left: 3px solid #b54a32;
 }
 
 .stale-plan {
   opacity: 0.45;
+}
+
+.outline-handle {
+  fill: rgba(138, 111, 78, 0.18);
+  stroke: #8a6f4e;
+  stroke-width: 0.05;
+}
+
+.outline-handle:hover {
+  fill: rgba(138, 111, 78, 0.35);
 }
 
 .label-star {
@@ -401,8 +552,32 @@ h2 {
 }
 
 @media (max-width: 1100px) {
+  html,
+  body,
+  #root {
+    height: auto;
+    overflow: auto;
+  }
+
+  .app {
+    height: auto;
+    overflow: visible;
+    min-height: 100vh;
+  }
+
   .workspace {
     grid-template-columns: 1fr;
+    flex: none;
+    height: auto;
+  }
+
+  .panel {
+    height: auto;
+    max-height: min(70vh, 640px);
+  }
+
+  .words-panel {
+    max-height: min(80vh, 720px);
   }
 
   .top {

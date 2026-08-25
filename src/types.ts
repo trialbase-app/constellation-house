@@ -1,6 +1,10 @@
+/** @deprecated sight は廃止。既存データ互換のため残す */
 export type LineKind = "access" | "sight";
 
-export type Mode = "select" | "place" | "access" | "sight";
+export type Mode = "select" | "place" | "access";
+
+/** 廊下幅（モジュール個数）。図面化の①で指定 */
+export type CorridorModules = 1 | 2;
 
 export type RoomType = "normal" | "stair" | "corridor" | "entrance";
 
@@ -82,6 +86,8 @@ export type House = {
   planStale: boolean;
   areaMargin: number;
   moduleMm: number;
+  /** 廊下を足すときの幅（モジュール1または2）。初期値1 */
+  corridorModules: CorridorModules;
 };
 
 export const ROAD_DEPTH = 2;
@@ -91,6 +97,9 @@ export const DEFAULT_AREA = 12;
 export const DEFAULT_SITE: Site = { width: 10, height: 15 };
 export const DEFAULT_AREA_MARGIN = 1.2;
 export const DEFAULT_MODULE_MM = 910;
+export const DEFAULT_CORRIDOR_MODULES: CorridorModules = 1;
+/** ⑦で面積を増やしてよい上限（目標面積に対する倍率） */
+export const AREA_MAX_FACTOR = 2;
 export const DEFAULT_DEPARTMENTS: Department[] = [
   { id: "dep-a", name: "部門A", color: "#e9cf9c" },
   { id: "dep-b", name: "部門B", color: "#d2e6bb" },

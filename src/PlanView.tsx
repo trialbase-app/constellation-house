@@ -1,3 +1,4 @@
+import { useRef, type PointerEvent } from "react";
 import {
   DEFAULT_MODULE_MM,
   ROAD_DEPTH,
@@ -7,10 +8,21 @@ import {
   type Wall,
 } from "./types";
 import { floorStats } from "./planLayout";
+import { indoorFrame, type OutlineEdge } from "./planStretch";
+import { useViewZoom, ZoomToolbar, zoomedViewBox } from "./viewZoom";
 
 const MARGIN = 1.2;
+const HANDLE = 0.55;
 
-export function PlanView({ house }: { house: House }) {
+type Props = {
+  house: House;
+  onStretchOutline?: (edge: OutlineEdge, coord: number) => void;
+};
+
+export function PlanView({ house, onStretchOutline }: Props) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const { zoom, zoomIn, zoomOut, resetZoom } = useViewZoom(svgRef);
+  const drag = useRef<{ edge: OutlineEdge } | null>(null);
   const siteW = house.site.width;
   const siteH = house.site.height;
   const showSite = house.siteVisible;
@@ -35,11 +47,68 @@ export function PlanView({ house }: { house: House }) {
   const coverage =
     siteArea > 0 ? (stats.floorArea / siteArea) * 100 : 0;
 
+  const editableFrame = rooms ? indoorFrame(rooms) : null;
+
+  function toLocal(e: PointerEvent<SVGSVGElement>) {
+    const svg = svgRef.current;
+    if (!svg) return null;
+    const pt = svg.createSVGPoint();
+    pt.x = e.clientX;
+    pt.y = e.clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return null;
+    const loc = pt.matrixTransform(ctm.inverse());
+    return { x: loc.x, y: loc.y };
+  }
+
+  function edgeCoord(edge: OutlineEdge, point: { x: number; y: number }) {
+    if (edge === "left" || edge === "right") return point.x;
+    return point.y;
+  }
+
+  function onHandlePointerDown(e: PointerEvent<SVGRectElement>) {
+    const target = e.currentTarget;
+    const edge = target.dataset.outline as OutlineEdge | undefined;
+    if (!edge || !onStretchOutline || !editableFrame) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.ownerSVGElement?.setPointerCapture(e.pointerId);
+    drag.current = { edge };
+  }
+
+  function onPointerMove(e: PointerEvent<SVGSVGElement>) {
+    if (!drag.current || !onStretchOutline) return;
+    const p = toLocal(e);
+    if (!p) return;
+    onStretchOutline(drag.current.edge, edgeCoord(drag.current.edge, p));
+  }
+
+  function onPointerUp(e: PointerEvent<SVGSVGElement>) {
+    drag.current = null;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  }
+
+  function handleCursor(edge: OutlineEdge) {
+    if (edge === "left" || edge === "right") return "ew-resize";
+    return "ns-resize";
+  }
+
   return (
-    <svg
-      className={stale ? "plan stale-plan" : "plan"}
-      viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`}
-    >
+    <div className="view-frame">
+      <ZoomToolbar
+        zoom={zoom}
+        onZoomIn={zoomIn}
+        onZoomOut={zoomOut}
+        onReset={resetZoom}
+      />
+      <svg
+        ref={svgRef}
+        className={stale ? "plan stale-plan" : "plan"}
+        viewBox={zoomedViewBox(vbX, vbY, vbW, vbH, zoom)}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      >
       <defs>
         <pattern
           id="garden-hatch"
@@ -139,7 +208,7 @@ export function PlanView({ house }: { house: House }) {
                 width={room.w}
                 height={room.h}
                 fill={
-                  room.kind === "corridor"
+                  isCorridorRoom(room, starById)
                     ? "#ebe5da"
                     : isGarden(room.name)
                         ? "url(#garden-hatch)"
@@ -187,7 +256,7 @@ export function PlanView({ house }: { house: House }) {
                 textAnchor="middle"
                 className="label-star"
               >
-                {room.kind === "corridor" ? "廊下" : room.name}
+                {isCorridorRoom(room, starById) ? "廊下" : room.name}
               </text>
               <text
                 x={room.x + room.w / 2}
@@ -199,6 +268,31 @@ export function PlanView({ house }: { house: House }) {
               </text>
             </g>
           ))}
+
+          {editableFrame && onStretchOutline ? (
+            <g className="outline-handles">
+              {(
+                [
+                  ["left", editableFrame.x, editableFrame.y + editableFrame.h / 2, HANDLE, editableFrame.h],
+                  ["right", editableFrame.x + editableFrame.w, editableFrame.y + editableFrame.h / 2, HANDLE, editableFrame.h],
+                  ["top", editableFrame.x + editableFrame.w / 2, editableFrame.y, editableFrame.w, HANDLE],
+                  ["bottom", editableFrame.x + editableFrame.w / 2, editableFrame.y + editableFrame.h, editableFrame.w, HANDLE],
+                ] as const
+              ).map(([edge, cx, cy, w, h]) => (
+                <rect
+                  key={edge}
+                  data-outline={edge}
+                  className="outline-handle"
+                  x={cx - w / 2}
+                  y={cy - h / 2}
+                  width={w}
+                  height={h}
+                  style={{ cursor: handleCursor(edge) }}
+                  onPointerDown={onHandlePointerDown}
+                />
+              ))}
+            </g>
+          ) : null}
         </>
       )}
 
@@ -214,7 +308,16 @@ export function PlanView({ house }: { house: House }) {
         </text>
       ) : null}
     </svg>
+    </div>
   );
+}
+
+function isCorridorRoom(
+  room: { id: string; kind: string },
+  starById: Map<string, { roomType: string }>,
+) {
+  const star = starById.get(room.id);
+  return star?.roomType === "corridor" || room.kind === "corridor";
 }
 
 function planBounds(house: House, showSite: boolean) {

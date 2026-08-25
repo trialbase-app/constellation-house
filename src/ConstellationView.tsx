@@ -8,6 +8,7 @@ import {
   type House,
   type Mode,
 } from "./types";
+import { useViewZoom, ZoomToolbar, zoomedViewBox } from "./viewZoom";
 
 const MARGIN = 1.2;
 
@@ -39,6 +40,7 @@ export function ConstellationView({
   onBackground,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
+  const { zoom, zoomIn, zoomOut, resetZoom } = useViewZoom(svgRef);
   const drag = useRef<{
     id: string;
     kind: "move" | "resize";
@@ -159,15 +161,22 @@ export function ConstellationView({
   );
 
   return (
-    <svg
-      ref={svgRef}
-      className="constellation"
-      viewBox={`${-MARGIN} ${-MARGIN} ${vbW} ${vbH}`}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
-    >
+    <div className="view-frame">
+      <ZoomToolbar
+        zoom={zoom}
+        onZoomIn={zoomIn}
+        onZoomOut={zoomOut}
+        onReset={resetZoom}
+      />
+      <svg
+        ref={svgRef}
+        className="constellation"
+        viewBox={zoomedViewBox(-MARGIN, -MARGIN, vbW, vbH, zoom)}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      >
       {showSite ? (
         <>
           <rect
@@ -228,7 +237,9 @@ export function ConstellationView({
         />
       )}
 
-      {house.links.map((link) => {
+      {house.links
+        .filter((link) => link.kind === "access")
+        .map((link) => {
         const from = house.stars.find((s) => s.id === link.fromId);
         const to = house.stars.find((s) => s.id === link.toId);
         if (!from || !to) return null;
@@ -251,19 +262,16 @@ export function ConstellationView({
               y2={to.y}
               stroke={selected ? "#8a3b24" : "#2c2924"}
               strokeWidth={selected ? 0.1 : 0.07}
-              strokeDasharray={link.kind === "sight" ? "0.18 0.14" : undefined}
               data-link={link.id}
             />
-            {link.kind === "access" ? (
-              <text
-                x={(from.x + to.x) / 2}
-                y={(from.y + to.y) / 2 - 0.22}
-                textAnchor="middle"
-                className="label-dist"
-              >
-                {distance(from, to).toFixed(1)}m
-              </text>
-            ) : null}
+            <text
+              x={(from.x + to.x) / 2}
+              y={(from.y + to.y) / 2 - 0.22}
+              textAnchor="middle"
+              className="label-dist"
+            >
+              {distance(from, to).toFixed(1)}m
+            </text>
           </g>
         );
       })}
@@ -320,5 +328,6 @@ export function ConstellationView({
         );
       })}
     </svg>
+    </div>
   );
 }

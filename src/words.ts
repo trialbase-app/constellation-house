@@ -20,9 +20,11 @@ export function describeHouse(house: House): string[] {
   const stats = floorStats(house);
   if (stats.roomSum > 0) {
     lines.push(
-      `部屋の合計 ${formatNum(stats.roomSum)}㎡ × 余裕率 ${formatNum(stats.margin)} ＝ 床面積 ${formatNum(stats.floorArea)}㎡。グリッドは ${stats.moduleMm}mm。`,
+      `部屋の合計 ${formatNum(stats.roomSum)}㎡ × 余裕率 ${formatNum(stats.margin)} ＝ 床面積 ${formatNum(stats.floorArea)}㎡。グリッドは ${stats.moduleMm}mm。廊下幅はモジュール ${house.corridorModules} 個。`,
     );
-    lines.push("図面化は、星座の基準線に対する左右関係を保ち、同じ部門色をまとめて割り付けます。");
+    lines.push(
+      "図面化は、部門ごとに部屋を置き、行き来を隣接または共通廊下でつなぎます。",
+    );
     if (house.siteVisible) {
       const siteArea = house.site.width * house.site.height;
       const coverage = siteArea > 0 ? (stats.floorArea / siteArea) * 100 : 0;
@@ -48,16 +50,13 @@ export function describeHouse(house: House): string[] {
   }
 
   for (const link of house.links) {
+    if (link.kind !== "access") continue;
     const from = house.stars.find((s) => s.id === link.fromId);
     const to = house.stars.find((s) => s.id === link.toId);
     if (!from || !to) continue;
-    if (link.kind === "access") {
-      lines.push(
-        `${from.name}と${to.name}は行き来できる（${formatNum(distance(from, to))}m）。`,
-      );
-    } else {
-      lines.push(`${from.name}から${to.name}が見える。`);
-    }
+    lines.push(
+      `${from.name}と${to.name}は行き来できる（${formatNum(distance(from, to))}m）。`,
+    );
   }
 
   return lines;

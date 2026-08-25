@@ -9,30 +9,294 @@ import {
   type Wall,
   type WallKind,
 } from "./types";
-import { layoutRooms } from "./planLayout";
+import {
+  resolveAccessRelations,
+  roomsShareWall,
+  type AccessFailure,
+} from "./planAccess";
+import { layoutRooms, placeGardens } from "./planLayout";
+import { enforceMinAreas, minHeightForArea, minWidthForArea, moduleSize } from "./roomArea";
 
 const EPS = 0.08;
 const DOOR = 0.8;
-const WINDOW = 1.1;
 type Bounds = { x: number; y: number; w: number; h: number };
 
-export function planify(house: House): {
-  rooms: Room[];
-  walls: Wall[];
-  openings: Opening[];
-} {
-  const rooms = layoutRooms(house);
+export type RoomOverlap = {
+  a: Room;
+  b: Room;
+  overlapX: number;
+  overlapY: number;
+  area: number;
+};
+
+export function findOverlaps(rooms: Room[]): RoomOverlap[] {
+  const hits: RoomOverlap[] = [];
+  const target = rooms.filter(
+    (r) => r.kind === "star" || r.kind === "garden" || r.kind === "corridor",
+  );
+  for (let i = 0; i < target.length; i++) {
+    for (let j = i + 1; j < target.length; j++) {
+      const a = target[i];
+      const b = target[j];
+      const ox = overlapX(a, b);
+      const oy = overlapY(a, b);
+      if (ox > EPS && oy > EPS) {
+        hits.push({ a, b, overlapX: ox, overlapY: oy, area: ox * oy });
+      }
+    }
+  }
+  return hits;
+}
+
+export function resolvePlanOverlaps(rooms: Room[], house: House) {
   const frame = deriveFloorFrame(rooms);
-  enforceAccessAdjacency(rooms, house, frame);
-  enforceDepartmentConnectivity(rooms, house, frame);
+  for (let pass = 0; pass < 4; pass++) {
+    forceSeparateAll(rooms, house, frame);
+    if (findOverlaps(rooms).length === 0) break;
+  }
+  snapApartOverlaps(rooms, house);
+}
+
+export type PlanifyResult =
+  | {
+      ok: true;
+      rooms: Room[];
+      walls: Wall[];
+      openings: Opening[];
+    }
+  | {
+      ok: false;
+      failures: AccessFailure[];
+    };
+
+/**
+ * 図面化パイプライン（契約）:
+ * ①敷地 ②必要床面積 ③建物ボリューム ④部屋配置
+ * ⑤空間関係（行き来） ⑥形状調整 ⑦面積調整 ⑧接続具体化
+ */
+export function planify(house: House): PlanifyResult {
+  const working: House = {
+    ...house,
+    links: house.links.filter((link) => link.kind === "access"),
+  };
+
+  // ②③④: 必要床面積・ボリューム・部屋配置（部門まとめ）
+  const rooms = layoutRooms(working);
+  const module = moduleSize(working.moduleMm);
+  let frame = deriveFloorFrame(rooms);
+
+  // 最低面積（目標1.0倍）まで確保
+  enforceMinAreas(rooms, module);
+  frame = deriveFloorFrame(rooms);
+  forceSeparateAll(rooms, house, frame);
+  snapApartOverlaps(rooms, house);
+  frame = deriveFloorFrame(rooms);
+
+  // 玄関は外気に面するよう寄せる（現状踏襲）
   enforceEntranceOnExterior(rooms, house, frame);
-  resolveOverlaps(rooms, house, frame);
-  enforceAccessAdjacency(rooms, house, frame);
-  enforceDepartmentConnectivity(rooms, house, frame);
-  enforceEntranceOnExterior(rooms, house, frame);
-  clampRoomsToBounds(rooms, house, frame);
-  const { walls, openings } = buildFabric(rooms, house);
-  return { rooms, walls, openings };
+
+  // ⑤⑥⑦: 行き来必須 → 形状 → 面積
+  const access = resolveAccessRelations(rooms, working, frame, {
+    forceSeparate: () => {
+      forceSeparateAll(rooms, house, frame);
+      snapApartOverlaps(rooms, house);
+    },
+    growAreas: () => {
+      // ⑦ 目標〜2倍まで増やして収める
+      enforceMinAreas(rooms, module);
+    },
+    cloneRooms: (source) => source.map((room) => ({ ...room })),
+    restoreRooms: (target, source) => {
+      target.splice(0, target.length, ...source.map((room) => ({ ...room })));
+    },
+  });
+
+  if (!access.ok) {
+    return { ok: false, failures: access.failures };
+  }
+
+  refreshGardenRooms(rooms, house, module);
+  frame = deriveFloorFrame(rooms);
+  if (findOverlaps(rooms).length > 0) {
+    forceSeparateAll(rooms, house, frame);
+    snapApartOverlaps(rooms, house);
+  }
+
+  const remaining = findOverlaps(rooms);
+  if (remaining.length > 0) {
+    return {
+      ok: false,
+      failures: remaining.map((hit) => ({
+        linkId: "",
+        fromName: hit.a.name,
+        toName: hit.b.name,
+        detail: `${hit.a.name} × ${hit.b.name} の重なりを解消できませんでした。`,
+      })),
+    };
+  }
+
+  // 最終確認: 行き来がまだ生きているか
+  const accessLinks = working.links.filter((l) => l.kind === "access");
+  const broken = accessLinks.filter((link) => {
+    const a = rooms.find((r) => r.id === link.fromId);
+    const b = rooms.find((r) => r.id === link.toId);
+    if (!a || !b) return true;
+    if (roomsShareWall(a, b)) return false;
+    const corridors = rooms.filter((r) => r.kind === "corridor");
+    return !corridors.some((c) => roomsShareWall(a, c) && roomsShareWall(b, c));
+  });
+  if (broken.length > 0) {
+    return {
+      ok: false,
+      failures: broken.map((link) => {
+        const from = working.stars.find((s) => s.id === link.fromId);
+        const to = working.stars.find((s) => s.id === link.toId);
+        return {
+          linkId: link.id,
+          fromName: from?.name ?? "",
+          toName: to?.name ?? "",
+          detail: `${from?.name ?? "?"}と${to?.name ?? "?"}の行き来が、最終調整で切れてしまいました。`,
+        };
+      }),
+    };
+  }
+
+  // ⑧ 壁・出入口
+  const { walls, openings } = buildFabric(rooms, working);
+  return { ok: true, rooms, walls, openings };
+}
+
+function refreshGardenRooms(rooms: Room[], house: House, module: number) {
+  const indoor = rooms.filter((room) => room.kind === "star");
+  const gardenStars = house.stars.filter((star) => isGarden(star.name));
+  if (gardenStars.length === 0) return;
+
+  const replacements = placeGardens(house, gardenStars, indoor, module);
+  for (const replacement of replacements) {
+    const index = rooms.findIndex((room) => room.id === replacement.id);
+    if (index >= 0) rooms[index] = replacement;
+  }
+}
+
+function forceSeparateAll(rooms: Room[], house: House, frame: Bounds) {
+  const module = moduleSize(house.moduleMm);
+
+  for (let pass = 0; pass < 120; pass++) {
+    const hits = findOverlaps(rooms).sort((a, b) => b.area - a.area);
+    if (hits.length === 0) break;
+
+    let changed = false;
+    for (const hit of hits) {
+      const before = hit.area;
+      nudgeApart(hit.a, hit.b, hit.overlapX, hit.overlapY, house, frame);
+      pushBothApart(hit.a, hit.b, house);
+      if (overlapX(hit.a, hit.b) > EPS && overlapY(hit.a, hit.b) > EPS) {
+        shrinkAreaOverlap(hit.a, hit.b, house);
+      }
+      if (trySnapRoomApart(hit.a, hit.b, rooms, house, module)) {
+        // snapped
+      }
+      const after = overlapX(hit.a, hit.b) * overlapY(hit.a, hit.b);
+      if (after + 1e-6 < before) changed = true;
+    }
+    if (!changed) break;
+  }
+}
+
+function pushBothApart(a: Room, b: Room, house: House) {
+  const ox = overlapX(a, b);
+  const oy = overlapY(a, b);
+  if (ox <= EPS || oy <= EPS) return;
+
+  const module = moduleSize(house.moduleMm);
+  if (ox <= oy) {
+    const half = (ox + EPS) / 2;
+    a.x -= half;
+    b.x += half;
+  } else {
+    const half = (oy + EPS) / 2;
+    a.y -= half;
+    b.y += half;
+  }
+  clampRoomToSite(a, house);
+  clampRoomToSite(b, house);
+
+  if (overlapX(a, b) > EPS && overlapY(a, b) > EPS) {
+    const movable = a.w * a.h <= b.w * b.h ? a : b;
+    if (ox <= oy && movable.w > module * 1.5) {
+      movable.w = Math.max(module, movable.w - module);
+    } else if (movable.h > module * 1.5) {
+      movable.h = Math.max(module, movable.h - module);
+    }
+    clampRoomToSite(movable, house);
+  }
+}
+
+function snapApartOverlaps(rooms: Room[], house: House) {
+  const module = moduleSize(house.moduleMm);
+
+  for (let pass = 0; pass < 50; pass++) {
+    const hits = findOverlaps(rooms);
+    if (hits.length === 0) break;
+
+    let changed = false;
+    for (const hit of hits) {
+      if (trySnapRoomApart(hit.a, hit.b, rooms, house, module)) {
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+}
+
+function trySnapRoomApart(
+  a: Room,
+  b: Room,
+  rooms: Room[],
+  house: House,
+  module: number,
+): boolean {
+  const movable = a.w * a.h <= b.w * b.h ? a : b;
+  const anchor = movable === a ? b : a;
+  const startX = movable.x;
+  const startY = movable.y;
+  const gap = module * 0.05 + EPS;
+
+  const candidates = [
+    { x: anchor.x + anchor.w + gap, y: movable.y },
+    { x: anchor.x - movable.w - gap, y: movable.y },
+    { x: movable.x, y: anchor.y + anchor.h + gap },
+    { x: movable.x, y: anchor.y - movable.h - gap },
+  ];
+
+  for (const pos of candidates) {
+    movable.x = pos.x;
+    movable.y = pos.y;
+    clampRoomToSite(movable, house);
+    const stillOverlaps = rooms.some((other) => {
+      if (other.id === movable.id) return false;
+      return overlapX(movable, other) > EPS && overlapY(movable, other) > EPS;
+    });
+    if (!stillOverlaps) return true;
+  }
+
+  movable.x = startX;
+  movable.y = startY;
+  return false;
+}
+
+function clampRoomToSite(room: Room, house: House) {
+  const module = moduleSize(house.moduleMm);
+  const minW = minWidthForArea(room, module);
+  const minH = minHeightForArea(room, module);
+  room.w = Math.max(minW, Math.min(room.w, house.site.width));
+  room.h = Math.max(minH, Math.min(room.h, house.site.height));
+  room.x = clamp(room.x, 0, Math.max(0, house.site.width - room.w));
+  room.y = clamp(room.y, 0, Math.max(0, house.site.height - room.h));
+}
+
+export function rebuildFabric(rooms: Room[], house: House) {
+  return buildFabric(rooms, house);
 }
 
 type Shared = {
@@ -67,20 +331,27 @@ function buildFabric(rooms: Room[], house: House): { walls: Wall[]; openings: Op
   const gardens = rooms.filter((r) => isGarden(r.name));
   const openings: Opening[] = [];
 
+  const corridors = rooms.filter((r) => r.kind === "corridor");
   for (const link of house.links) {
+    if (link.kind !== "access") continue;
     const a = rooms.find((r) => r.id === link.fromId);
     const b = rooms.find((r) => r.id === link.toId);
     if (!a || !b) continue;
     const shared = sharedWall(a, b);
-    if (link.kind === "access") {
-      if (shared) {
-        openings.push(openingFromShared(shared, a, b, "door", DOOR));
+    if (shared) {
+      openings.push(openingFromShared(shared, a, b, "door", DOOR));
+      continue;
+    }
+    // 廊下経由の行き来: 各室と廊下の接面に出入口
+    for (const corridor of corridors) {
+      const toCorrA = sharedWall(a, corridor);
+      const toCorrB = sharedWall(b, corridor);
+      if (toCorrA) {
+        openings.push(openingFromShared(toCorrA, a, corridor, "door", DOOR));
       }
-    } else if (shared) {
-      openings.push(openingFromShared(shared, a, b, "window", WINDOW));
-    } else {
-      const facing = facingEdge(a, b);
-      if (facing) openings.push(openingOnEdge(facing, "window", WINDOW, a));
+      if (toCorrB) {
+        openings.push(openingFromShared(toCorrB, b, corridor, "door", DOOR));
+      }
     }
   }
 
@@ -137,7 +408,9 @@ function buildFabric(rooms: Room[], house: House): { walls: Wall[]; openings: Op
 }
 
 function deriveFloorFrame(rooms: Room[]): Bounds {
-  const target = rooms.filter((r) => r.kind === "star" || r.kind === "garden");
+  const target = rooms.filter(
+    (r) => r.kind === "star" || r.kind === "garden" || r.kind === "corridor",
+  );
   if (target.length === 0) return { x: 0, y: 0, w: 1, h: 1 };
   let minX = Infinity;
   let minY = Infinity;
@@ -150,77 +423,6 @@ function deriveFloorFrame(rooms: Room[]): Bounds {
     maxY = Math.max(maxY, bottom(room));
   }
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-}
-
-function enforceAccessAdjacency(rooms: Room[], house: House, frame: Bounds) {
-  const targetRooms = rooms.filter(
-    (r) => r.kind === "star" || r.kind === "garden",
-  );
-  for (let i = 0; i < 28; i++) {
-    for (const link of house.links) {
-      if (link.kind !== "access") continue;
-      const a = targetRooms.find((r) => r.id === link.fromId);
-      const b = targetRooms.find((r) => r.id === link.toId);
-      if (!a || !b) continue;
-      if (sharedWall(a, b)) continue;
-      forceShareByExpansion(a, b, house, frame);
-    }
-  }
-}
-
-function enforceDepartmentConnectivity(rooms: Room[], house: House, frame: Bounds) {
-  const targetRooms = rooms.filter((r) => r.kind === "star");
-  const starById = new Map(house.stars.map((s) => [s.id, s]));
-  const byDepartment = new Map<string, Room[]>();
-
-  for (const room of targetRooms) {
-    const dep = starById.get(room.id)?.departmentId;
-    if (!dep) continue;
-    const list = byDepartment.get(dep) ?? [];
-    list.push(room);
-    byDepartment.set(dep, list);
-  }
-
-  for (const [, depRooms] of byDepartment) {
-    if (depRooms.length <= 1) continue;
-    const pairs = buildDepartmentPairs(depRooms);
-    for (let i = 0; i < 20; i++) {
-      let allShared = true;
-      for (const [a, b] of pairs) {
-        if (sharedWall(a, b)) continue;
-        forceShareByShift(a, b, house, frame);
-        allShared = false;
-      }
-      if (allShared) break;
-    }
-  }
-}
-
-function buildDepartmentPairs(depRooms: Room[]): Array<[Room, Room]> {
-  const remaining = depRooms.slice(1);
-  const connected = [depRooms[0]];
-  const pairs: Array<[Room, Room]> = [];
-
-  while (remaining.length > 0) {
-    let bestI = 0;
-    let bestFrom = connected[0];
-    let bestD = Infinity;
-    for (const from of connected) {
-      for (let i = 0; i < remaining.length; i++) {
-        const to = remaining[i];
-        const d = Math.hypot(cx(from) - cx(to), cy(from) - cy(to));
-        if (d < bestD) {
-          bestD = d;
-          bestI = i;
-          bestFrom = from;
-        }
-      }
-    }
-    const [picked] = remaining.splice(bestI, 1);
-    pairs.push([bestFrom, picked]);
-    connected.push(picked);
-  }
-  return pairs;
 }
 
 function enforceEntranceOnExterior(rooms: Room[], house: House, frame: Bounds) {
@@ -250,77 +452,112 @@ function enforceEntranceOnExterior(rooms: Room[], house: House, frame: Bounds) {
   }
 }
 
-function resolveOverlaps(rooms: Room[], house: House, frame: Bounds) {
-  const starById = new Map(house.stars.map((s) => [s.id, s]));
-  const target = rooms.filter((r) => r.kind === "star" || r.kind === "garden");
-  for (let pass = 0; pass < 30; pass++) {
-    let changed = false;
-    for (let i = 0; i < target.length; i++) {
-      for (let j = i + 1; j < target.length; j++) {
-        const a = target[i];
-        const b = target[j];
-        const ox = overlapX(a, b);
-        const oy = overlapY(a, b);
-        if (ox <= 0.02 || oy <= 0.02) continue;
-        if (shouldKeepTouching(a, b, house, starById)) continue;
-        separateRooms(a, b, ox, oy, house, frame);
-        changed = true;
-      }
+function shrinkAreaOverlap(a: Room, b: Room, house: House) {
+  const module = moduleSize(house.moduleMm);
+  const ox = overlapX(a, b);
+  const oy = overlapY(a, b);
+  const movable = a.w * a.h <= b.w * b.h ? a : b;
+  const anchor = movable === a ? b : a;
+
+  if (ox <= oy) {
+    if (cx(movable) >= cx(anchor)) {
+      movable.w = Math.max(minWidthForArea(movable, module), right(anchor) - movable.x);
+    } else {
+      const nextW = Math.max(minWidthForArea(movable, module), right(movable) - anchor.x);
+      movable.x = right(movable) - nextW;
+      movable.w = nextW;
     }
-    if (!changed) break;
+  } else if (cy(movable) >= cy(anchor)) {
+    movable.h = Math.max(minHeightForArea(movable, module), bottom(anchor) - movable.y);
+  } else {
+    const nextH = Math.max(minHeightForArea(movable, module), bottom(movable) - anchor.y);
+    movable.y = bottom(movable) - nextH;
+    movable.h = nextH;
   }
+
+  clampRoomToSite(movable, house);
+  clampRoomToSite(anchor, house);
 }
 
-function shouldKeepTouching(
-  a: Room,
-  b: Room,
-  house: House,
-  starById: Map<string, House["stars"][number]>,
-) {
-  if (house.links.some((l) => l.kind === "access" && (
-    (l.fromId === a.id && l.toId === b.id) ||
-    (l.fromId === b.id && l.toId === a.id)
-  ))) {
-    return true;
-  }
-  const depA = starById.get(a.id)?.departmentId;
-  const depB = starById.get(b.id)?.departmentId;
-  return Boolean(depA && depB && depA === depB);
-}
-
-function separateRooms(
+function nudgeApart(
   a: Room,
   b: Room,
   ox: number,
   oy: number,
   house: House,
-  frame: Bounds,
+  _frame: Bounds,
 ) {
-  const aArea = a.w * a.h;
-  const bArea = b.w * b.h;
-  const movable = aArea <= bArea ? a : b;
+  const module = moduleSize(house.moduleMm);
+  const movable = a.w * a.h <= b.w * b.h ? a : b;
   const anchor = movable === a ? b : a;
   const dx = cx(movable) - cx(anchor);
   const dy = cy(movable) - cy(anchor);
 
-  if (ox < oy) {
-    const shift = ox + 0.04;
+  if (ox <= oy) {
+    const shift = ox + EPS + 0.01;
     movable.x += dx >= 0 ? shift : -shift;
+    clampRoomToSite(movable, house);
+    if (overlapX(a, b) > EPS && overlapY(a, b) > EPS) {
+      shrinkAlongAxis(movable, anchor, "x", house);
+    }
   } else {
-    const shift = oy + 0.04;
+    const shift = oy + EPS + 0.01;
     movable.y += dy >= 0 ? shift : -shift;
+    clampRoomToSite(movable, house);
+    if (overlapX(a, b) > EPS && overlapY(a, b) > EPS) {
+      shrinkAlongAxis(movable, anchor, "y", house);
+    }
   }
-  clampRoomToBounds(movable, house, frame);
+
+  if (overlapX(a, b) > EPS && overlapY(a, b) > EPS) {
+    shrinkAreaOverlap(a, b, house);
+  }
+
+  if (overlapX(a, b) > EPS && overlapY(a, b) > EPS) {
+    const minW = minWidthForArea(movable, module);
+    const minH = minHeightForArea(movable, module);
+    if (ox <= oy && movable.w > minW + module) {
+      movable.w = Math.max(minW, movable.w - module);
+    } else if (movable.h > minH + module) {
+      movable.h = Math.max(minH, movable.h - module);
+    }
+    clampRoomToSite(movable, house);
+  }
 }
 
-function clampRoomsToBounds(rooms: Room[], house: House, frame: Bounds) {
-  for (const room of rooms) {
-    if (room.kind !== "star" && room.kind !== "garden") continue;
-    clampRoomToBounds(room, house, frame);
+function shrinkAlongAxis(
+  movable: Room,
+  anchor: Room,
+  axis: "x" | "y",
+  house: House,
+) {
+  const module = moduleSize(house.moduleMm);
+  if (axis === "x") {
+    const ox = overlapX(movable, anchor);
+    if (ox <= EPS) return;
+    if (cx(movable) >= cx(anchor)) {
+      movable.w = Math.max(minWidthForArea(movable, module), movable.w - ox - EPS);
+    } else {
+      const nextW = Math.max(minWidthForArea(movable, module), movable.w - ox - EPS);
+      movable.x = right(movable) - nextW;
+      movable.w = nextW;
+    }
+  } else {
+    const oy = overlapY(movable, anchor);
+    if (oy <= EPS) return;
+    if (cy(movable) >= cy(anchor)) {
+      movable.h = Math.max(minHeightForArea(movable, module), movable.h - oy - EPS);
+    } else {
+      const nextH = Math.max(minHeightForArea(movable, module), movable.h - oy - EPS);
+      movable.y = bottom(movable) - nextH;
+      movable.h = nextH;
+    }
   }
+  clampRoomToSite(movable, house);
 }
 
 function clampRoomToBounds(room: Room, house: House, frame: Bounds) {
+  const module = moduleSize(house.moduleMm);
   const siteX0 = 0;
   const siteY0 = 0;
   const siteX1 = house.site.width;
@@ -331,146 +568,12 @@ function clampRoomToBounds(room: Room, house: House, frame: Bounds) {
   const x1 = Math.min(siteX1, frame.x + frame.w);
   const y1 = Math.min(siteY1, frame.y + frame.h);
 
-  room.w = Math.min(room.w, Math.max(0.2, x1 - x0));
-  room.h = Math.min(room.h, Math.max(0.2, y1 - y0));
+  const minW = minWidthForArea(room, module);
+  const minH = minHeightForArea(room, module);
+  room.w = Math.max(minW, Math.min(room.w, Math.max(minW, x1 - x0)));
+  room.h = Math.max(minH, Math.min(room.h, Math.max(minH, y1 - y0)));
   room.x = clamp(room.x, x0, Math.max(x0, x1 - room.w));
   room.y = clamp(room.y, y0, Math.max(y0, y1 - room.h));
-}
-
-function forceShareByExpansion(a: Room, b: Room, house: House, frame: Bounds) {
-  const dx = cx(b) - cx(a);
-  const dy = cy(b) - cy(a);
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    // 左右方向に接続を作る（小さい方を優先して伸ばす）
-    const aArea = a.w * a.h;
-    const bArea = b.w * b.h;
-    if (dx >= 0) {
-      if (aArea <= bArea) {
-        const nextW = Math.max(a.w, b.x - a.x);
-        if (canExpand(a, nextW, a.h, frame)) {
-          a.w = nextW;
-        } else {
-          b.x = a.x + a.w;
-        }
-      } else {
-        b.x = a.x + a.w;
-      }
-    } else {
-      if (bArea <= aArea) {
-        const nextW = Math.max(b.w, a.x - b.x);
-        if (canExpand(b, nextW, b.h, frame)) {
-          b.w = nextW;
-        } else {
-          a.x = b.x + b.w;
-        }
-      } else {
-        a.x = b.x + b.w;
-      }
-    }
-    const oy = overlapY(a, b);
-    if (oy < 0.6) {
-      const top = Math.min(a.y, b.y);
-      const bottomY = Math.max(bottom(a), bottom(b));
-      if (aArea <= bArea) {
-        const nextH = bottomY - top;
-        if (canExpand(a, a.w, nextH, frame)) {
-          a.y = top;
-          a.h = nextH;
-        } else {
-          b.y = cy(a) - b.h / 2;
-        }
-      } else {
-        const nextH = bottomY - top;
-        if (canExpand(b, b.w, nextH, frame)) {
-          b.y = top;
-          b.h = nextH;
-        } else {
-          a.y = cy(b) - a.h / 2;
-        }
-      }
-    }
-  } else {
-    // 上下方向に接続を作る（小さい方を優先して伸ばす）
-    const aArea = a.w * a.h;
-    const bArea = b.w * b.h;
-    if (dy >= 0) {
-      if (aArea <= bArea) {
-        const nextH = Math.max(a.h, b.y - a.y);
-        if (canExpand(a, a.w, nextH, frame)) {
-          a.h = nextH;
-        } else {
-          b.y = a.y + a.h;
-        }
-      } else {
-        b.y = a.y + a.h;
-      }
-    } else {
-      if (bArea <= aArea) {
-        const nextH = Math.max(b.h, a.y - b.y);
-        if (canExpand(b, b.w, nextH, frame)) {
-          b.h = nextH;
-        } else {
-          a.y = b.y + b.h;
-        }
-      } else {
-        a.y = b.y + b.h;
-      }
-    }
-    const ox = overlapX(a, b);
-    if (ox < 0.6) {
-      const left = Math.min(a.x, b.x);
-      const rightX = Math.max(right(a), right(b));
-      if (aArea <= bArea) {
-        const nextW = rightX - left;
-        if (canExpand(a, nextW, a.h, frame)) {
-          a.x = left;
-          a.w = nextW;
-        } else {
-          b.x = cx(a) - b.w / 2;
-        }
-      } else {
-        const nextW = rightX - left;
-        if (canExpand(b, nextW, b.h, frame)) {
-          b.x = left;
-          b.w = nextW;
-        } else {
-          a.x = cx(b) - a.w / 2;
-        }
-      }
-    }
-  }
-  clampRoomToBounds(a, house, frame);
-  clampRoomToBounds(b, house, frame);
-}
-
-function forceShareByShift(a: Room, b: Room, house: House, frame: Bounds) {
-  const dx = cx(b) - cx(a);
-  const dy = cy(b) - cy(a);
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    if (dx >= 0) b.x = a.x + a.w;
-    else a.x = b.x + b.w;
-    if (overlapY(a, b) < 0.6) {
-      b.y = cy(a) - b.h / 2;
-    }
-  } else {
-    if (dy >= 0) b.y = a.y + a.h;
-    else a.y = b.y + b.h;
-    if (overlapX(a, b) < 0.6) {
-      b.x = cx(a) - b.w / 2;
-    }
-  }
-  clampRoomToBounds(a, house, frame);
-  clampRoomToBounds(b, house, frame);
-}
-
-function canExpand(room: Room, nextW: number, nextH: number, frame: Bounds) {
-  const area = nextW * nextH;
-  const min = Math.max(1, room.minArea);
-  const areaLimit = min * 2.0;
-  const aspect = Math.max(nextW / Math.max(0.01, nextH), nextH / Math.max(0.01, nextW));
-  const aspectLimit = room.kind === "corridor" ? 6.0 : 2.4;
-  const inFrame = nextW <= frame.w + EPS && nextH <= frame.h + EPS;
-  return area <= areaLimit && aspect <= aspectLimit && inFrame;
 }
 
 type Edge = {
@@ -637,16 +740,6 @@ function openingOnEdge(edge: Edge, kind: OpeningKind, width: number, into: Room)
     leafY,
     sweep,
   };
-}
-
-function facingEdge(from: Room, to: Room): Edge | null {
-  const dx = cx(to) - cx(from);
-  const dy = cy(to) - cy(from);
-  const edges = roomEdges(from);
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    return dx >= 0 ? edges[3] : edges[2];
-  }
-  return dy >= 0 ? edges[1] : edges[0];
 }
 
 function pickEntrances(indoor: Room[], house: House): Room[] {

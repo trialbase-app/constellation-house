@@ -22,6 +22,7 @@ type Spine = {
 };
 
 const PADDING = 0;
+const EPS = 0.08;
 
 export function layoutRooms(house: House): Room[] {
   const module = (house.moduleMm || DEFAULT_MODULE_MM) / 1000;
@@ -34,7 +35,8 @@ export function layoutRooms(house: House): Room[] {
 
   const { starRooms, autoRooms } = layoutBuilding(house, indoorStars, module);
   const gardens = placeGardens(house, gardenStars, starRooms, module);
-  return [...starRooms, ...autoRooms, ...gardens];
+  const rooms = [...starRooms, ...autoRooms, ...gardens];
+  return rooms;
 }
 
 export function floorStats(house: House) {
@@ -356,7 +358,7 @@ function splitRect(rect: Rect, items: Item[], house: House, module: number): Roo
 
   const vertical = chooseAxis(rect, items);
   const { leftItems, rightItems, split } = chooseSplit(rect, items, house, vertical, module);
-  if (split == null) return items.map((_, index) => stackFallback(rect, items, index, module));
+  if (split == null) return stackFallback(rect, items, module);
 
   const leftRect = vertical
     ? { x: rect.x, y: rect.y, w: split - rect.x, h: rect.h }
@@ -364,6 +366,15 @@ function splitRect(rect: Rect, items: Item[], house: House, module: number): Roo
   const rightRect = vertical
     ? { x: split, y: rect.y, w: rect.x + rect.w - split, h: rect.h }
     : { x: rect.x, y: split, w: rect.w, h: rect.y + rect.h - split };
+
+  if (
+    leftRect.w < module - EPS ||
+    leftRect.h < module - EPS ||
+    rightRect.w < module - EPS ||
+    rightRect.h < module - EPS
+  ) {
+    return stackFallback(rect, items, module);
+  }
 
   return [...splitRect(leftRect, leftItems, house, module), ...splitRect(rightRect, rightItems, house, module)];
 }
@@ -401,27 +412,83 @@ function chooseSplit(rect: Rect, items: Item[], house: House, vertical: boolean,
 
   const leftItems = sorted.slice(0, bestK);
   const rightItems = sorted.slice(bestK);
+  const minLeftModules = minModulesForItems(leftItems, vertical ? rect.h : rect.w, module);
+  const minRightModules = minModulesForItems(rightItems, vertical ? rect.h : rect.w, module);
+  if (minLeftModules + minRightModules > modules) {
+    return { leftItems: sorted, rightItems: [], split: null };
+  }
+
   let splitK = clamp(Math.round((sumMin(leftItems) / total) * modules), 1, modules - 1);
+  splitK = clamp(splitK, minLeftModules, modules - minRightModules);
   const origin = vertical ? rect.x : rect.y;
   let split = origin + splitK * module;
-  split = clamp(split, origin + module, origin + span - module);
+  split = clamp(split, origin + minLeftModules * module, origin + span - minRightModules * module);
   return { leftItems, rightItems, split };
 }
 
-function stackFallback(rect: Rect, items: Item[], index: number, module: number): Room {
-  const item = items[index];
-  const n = items.length;
-  const h = Math.max(module, rect.h / n);
-  return {
-    id: item.star.id,
-    name: item.star.name,
-    kind: "star",
-    x: rect.x,
-    y: rect.y + index * h,
-    w: rect.w,
-    h: index === n - 1 ? rect.y + rect.h - (rect.y + index * h) : h,
-    minArea: item.minArea,
-  };
+function minModulesForItems(items: Item[], crossSpan: number, module: number) {
+  if (items.length === 0) return 1;
+  const totalMin = sumMin(items);
+  const cross = Math.max(module, crossSpan);
+  const along = Math.max(module, totalMin / cross);
+  return Math.max(1, Math.ceil(along / module));
+}
+
+function stackFallback(rect: Rect, items: Item[], module: number): Room[] {
+  if (items.length === 0) return [];
+  if (rect.w < module - EPS || rect.h < module - EPS) return [];
+
+  const vertical = rect.h >= rect.w;
+  const along = vertical ? rect.h : rect.w;
+  const minAlong = module * items.length;
+  if (along < minAlong - EPS) {
+    return stackFallbackAlong(rect, items, module, !vertical);
+  }
+  return stackFallbackAlong(rect, items, module, vertical);
+}
+
+function stackFallbackAlong(
+  rect: Rect,
+  items: Item[],
+  module: number,
+  vertical: boolean,
+): Room[] {
+  const total = sumMin(items);
+  const along = vertical ? rect.h : rect.w;
+  let cursor = vertical ? rect.y : rect.x;
+  const end = vertical ? rect.y + rect.h : rect.x + rect.w;
+  const rooms: Room[] = [];
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const isLast = i === items.length - 1;
+    const remaining = end - cursor;
+    const remainingCount = items.length - i;
+    let span = isLast
+      ? remaining
+      : Math.max(
+          module,
+          Math.min(
+            snapUp((item.minArea / total) * along, module),
+            remaining - module * (remainingCount - 1),
+          ),
+        );
+    span = Math.max(module, Math.min(span, remaining));
+
+    rooms.push({
+      id: item.star.id,
+      name: item.star.name,
+      kind: "star",
+      x: vertical ? rect.x : cursor,
+      y: vertical ? cursor : rect.y,
+      w: vertical ? rect.w : span,
+      h: vertical ? span : rect.h,
+      minArea: item.minArea,
+    });
+    cursor += span;
+  }
+
+  return rooms;
 }
 
 function countCutLinks(left: Item[], right: Item[], house: House) {
@@ -440,7 +507,7 @@ function countCutLinks(left: Item[], right: Item[], house: House) {
   return n;
 }
 
-function placeGardens(house: House, gardenStars: Star[], indoor: Room[], module: number): Room[] {
+export function placeGardens(house: House, gardenStars: Star[], indoor: Room[], module: number): Room[] {
   return gardenStars.map((star) => {
     const minArea = Math.max(MIN_AREA, star.area);
     const neighbor =

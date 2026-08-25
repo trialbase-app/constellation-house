@@ -3,15 +3,19 @@ import "./App.css";
 import { ConstellationView } from "./ConstellationView";
 import { PlanView } from "./PlanView";
 import { planify } from "./planify";
+import { validatePlanify, type PlanifyValidation } from "./planValidate";
+import { stretchOutline, type OutlineEdge } from "./planStretch";
 import {
   DEFAULT_AREA,
   DEFAULT_AREA_MARGIN,
+  DEFAULT_CORRIDOR_MODULES,
   DEFAULT_DEPARTMENTS,
   DEFAULT_MODULE_MM,
   DEFAULT_SITE,
   MAX_AREA,
   MIN_AREA,
   newId,
+  type CorridorModules,
   type House,
   type Link,
   type Mode,
@@ -33,6 +37,7 @@ const emptyHouse = (): House => ({
   planStale: false,
   areaMargin: DEFAULT_AREA_MARGIN,
   moduleMm: DEFAULT_MODULE_MM,
+  corridorModules: DEFAULT_CORRIDOR_MODULES,
 });
 
 export default function App() {
@@ -54,6 +59,7 @@ export default function App() {
   const [starAreaDrafts, setStarAreaDrafts] = useState<Record<string, string>>(
     {},
   );
+  const [validation, setValidation] = useState<PlanifyValidation | null>(null);
 
   const words = useMemo(() => describeHouse(house), [house]);
 
@@ -279,7 +285,7 @@ export default function App() {
   }
 
   function onStarClick(id: string) {
-    if (mode === "access" || mode === "sight") {
+    if (mode === "access") {
       if (!linkFromId) {
         setLinkFromId(id);
         setSelectedStarId(id);
@@ -289,11 +295,10 @@ export default function App() {
         setLinkFromId(null);
         return;
       }
-      const kind = mode === "access" ? "access" : "sight";
       setHouse((h) => {
         const exists = h.links.some(
           (l) =>
-            l.kind === kind &&
+            l.kind === "access" &&
             ((l.fromId === linkFromId && l.toId === id) ||
               (l.fromId === id && l.toId === linkFromId)),
         );
@@ -302,7 +307,7 @@ export default function App() {
           id: newId("link"),
           fromId: linkFromId,
           toId: id,
-          kind,
+          kind: "access",
         };
         return markEdited({ ...h, links: [...h.links, link] });
       });
@@ -315,17 +320,79 @@ export default function App() {
     setSelectedLinkId(null);
   }
 
+  function runValidate() {
+    setValidation(validatePlanify(house));
+  }
+
   function runPlanify() {
     if (house.stars.length === 0) return;
-    const { rooms, walls, openings } = planify(house);
+    const check = validatePlanify(house);
+    setValidation(check);
+    if (!check.ready) return;
+
+    const result = planify(house);
+    if (!result.ok) {
+      setHouse((h) => ({
+        ...h,
+        rooms: null,
+        walls: null,
+        openings: null,
+        planStale: false,
+      }));
+      setValidation({
+        ready: true,
+        ok: false,
+        cancelled: true,
+        items: [
+          {
+            level: "error",
+            title: "図面化を中止しました",
+            detail:
+              "行き来の線をすべて満たす間取りが作れなかったため、図面は出していません。下の線が特につなげられませんでした。",
+          },
+          ...result.failures.map((f) => ({
+            level: "error" as const,
+            title:
+              f.fromName && f.toName
+                ? `${f.fromName} と ${f.toName} の行き来`
+                : "配置の失敗",
+            detail: f.detail,
+          })),
+          {
+            level: "warn",
+            title: "試せること",
+            detail:
+              "①行き来の線を減らす ②離れている星を近づける ③部門色を分ける（いま全部同じ色だと一塊に押し込まれやすい） ④余裕率を少し下げる",
+          },
+        ],
+      });
+      setMode("select");
+      return;
+    }
+
+    const nextHouse = {
+      ...house,
+      rooms: result.rooms,
+      walls: result.walls,
+      openings: result.openings,
+      planStale: false,
+    };
+    setHouse(nextHouse);
+    setValidation(validatePlanify(nextHouse));
+    setMode("select");
+  }
+
+  function handleStretchOutline(edge: OutlineEdge, coord: number) {
+    if (!house.rooms) return;
+    const result = stretchOutline(house, edge, coord);
+    if (!result) return;
     setHouse({
       ...house,
-      rooms,
-      walls,
-      openings,
+      rooms: result.rooms,
+      walls: result.walls,
+      openings: result.openings,
       planStale: false,
     });
-    setMode("select");
   }
 
   const hint =
@@ -335,21 +402,17 @@ export default function App() {
         ? linkFromId
           ? "行き来先の星をクリックします。"
           : "行き来の始点になる星をクリックします。"
-        : mode === "sight"
-          ? linkFromId
-            ? "見える先の星をクリックします。"
-            : "視線の始点になる星をクリックします。"
-          : "星を動かしたり、大きさを変えたりできます。";
+        : "星を動かしたり、大きさを変えたりできます。";
 
   return (
     <div className="app">
       <header className="top">
         <div>
           <p className="eyebrow">設計スケッチ</p>
-          <h1>星座の家</h1>
+          <h1>空間の星座</h1>
         </div>
         <p className="lead">
-          要求室の星を部門色でまとめ、図面化で廊下帯と部門塊を作って平面にします。
+          空間の関係からはじめる設計スケッチ。行き来の線を隣接下か廊下で平面にします。
         </p>
       </header>
 
@@ -379,16 +442,7 @@ export default function App() {
             setLinkFromId(null);
           }}
         >
-          行き来（実線）
-        </Tool>
-        <Tool
-          active={mode === "sight"}
-          onClick={() => {
-            setMode("sight");
-            setLinkFromId(null);
-          }}
-        >
-          見える（破線）
+          行き来
         </Tool>
         <button
           className="tool danger"
@@ -399,6 +453,13 @@ export default function App() {
           }}
         >
           消す
+        </button>
+        <button
+          className="tool"
+          disabled={house.stars.length === 0}
+          onClick={runValidate}
+        >
+          条件を検証
         </button>
         <button
           className="tool primary"
@@ -413,7 +474,10 @@ export default function App() {
 
       <div className="workspace">
         <section className="panel canvas-panel">
-          <h2>星座</h2>
+          <div className="panel-head">
+            <h2>星座</h2>
+            <span className="plan-note">ホイールで拡大縮小</span>
+          </div>
           <ConstellationView
             house={house}
             mode={mode}
@@ -441,10 +505,15 @@ export default function App() {
             {house.rooms && house.planStale ? (
               <span className="stale">古い図面です。もう一度図面化してください。</span>
             ) : house.rooms ? (
-              <span className="plan-note">基準線で部門の左右を保ちながら、同じ部門色をまとめて配置しています。</span>
+              <span className="plan-note">
+                外枠をドラッグするとグリッドに合わせて形を変えられます（廊下の幅は固定）。
+              </span>
             ) : null}
           </div>
-          <PlanView house={house} />
+          <PlanView
+            house={house}
+            onStretchOutline={house.rooms ? handleStretchOutline : undefined}
+          />
         </section>
 
         <aside className="panel words-panel">
@@ -627,6 +696,23 @@ export default function App() {
               />
             </label>
             <label>
+              廊下幅（モジュール）
+              <select
+                value={house.corridorModules}
+                onChange={(e) =>
+                  setHouse((h) =>
+                    markEdited({
+                      ...h,
+                      corridorModules: Number(e.target.value) as CorridorModules,
+                    }),
+                  )
+                }
+              >
+                <option value={1}>1個</option>
+                <option value={2}>2個</option>
+              </select>
+            </label>
+            <label>
               グリッド（mm）
               <input
                 type="text"
@@ -642,6 +728,45 @@ export default function App() {
               />
             </label>
           </div>
+          <details className="words-toggle" open={validation !== null}>
+            <summary>図面化の条件チェック</summary>
+            {validation ? (
+              <div className="validation-box">
+                <p
+                  className={
+                    validation.ok
+                      ? "validation-summary ok"
+                      : validation.cancelled || !validation.ready
+                        ? "validation-summary error"
+                        : "validation-summary warn"
+                  }
+                >
+                  {validation.ok
+                    ? "問題なく図面化できます。"
+                    : validation.cancelled
+                      ? "図面化を中止しました。下の理由を確認してください。"
+                      : validation.ready
+                        ? "図面化は可能ですが、注意点があります。"
+                        : "図面化の条件が足りません。下の項目を確認してください。"}
+                </p>
+                <ul className="validation-list">
+                  {validation.items.map((item) => (
+                    <li
+                      key={`${item.level}-${item.title}`}
+                      className={`validation-item ${item.level}`}
+                    >
+                      <strong>{item.title}</strong>
+                      <span>{item.detail}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <p className="quiet">
+                「条件を検証」を押すと、星の数・敷地の広さ・重なりなどをチェックします。
+              </p>
+            )}
+          </details>
           <details className="words-toggle">
             <summary>言葉（開閉）</summary>
             <ul className="words words-box">
