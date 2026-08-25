@@ -4,7 +4,9 @@
 
 部屋を円の星として置き、行き来の線をつなぐと、言葉と簡易図面がついてくる設計スケッチ。
 
-リポジトリ: https://github.com/trialbase-app/constellation-house （非公開）
+**すぐ使う（ブラウザ）:** https://constellation-house.vercel.app
+
+リポジトリ: https://github.com/trialbase-app/constellation-house
 
 ## 動かし方（このPC／別のPC共通）
 
